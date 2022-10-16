@@ -1,0 +1,2 @@
+main = "./src/index.ts"
+name = "huddless"
