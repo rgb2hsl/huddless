@@ -78,7 +78,8 @@ const handleSession = async (websocket: WebSocket, env: Env): Promise<void> => {
       /** Drop Old Messages */
       state.messages = state.messages.filter(
         (m) =>
-          add(new Date(m.date), { seconds: config.dissolveTime }) > new Date()
+          add(new Date(m.date), { seconds: config.dissolveTime / 1000 }) >
+          new Date()
       );
 
       /** Websocket routing */
