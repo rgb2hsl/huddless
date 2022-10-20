@@ -103,6 +103,13 @@ const handleSession = async (websocket: WebSocket, env: Env): Promise<void> => {
         if (person.identity === claimedIdentity) {
           console.log("Permission granted, identity:", claimedIdentity);
 
+          // check for name avaible
+          const faker = state.persons.find(
+            (p) => p.identity !== claimedIdentity && p.title === person.title
+          );
+
+          if (faker) person.title = `${person.title}_2`;
+
           const oldPerson = state.persons.find(
             (p) => p.identity === claimedIdentity
           );
