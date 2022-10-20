@@ -1,2 +1,9 @@
-main = "./src/index.ts"
 name = "huddless"
+main = "src/index.ts"
+usage_model = "bundled"
+compatibility_date = "2022-09-16"
+node_compat = true
+
+kv_namespaces = [
+  { binding = "HUDDLESS", id = "10ba233852f14343ac240deeacf6e484", preview_id = "7dc819b8099a405abe2d5720ce71865c" }
+]

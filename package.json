@@ -27,12 +27,16 @@
 			"project": "tsconfig.json"
 		},
 		"rules": {
+			"@typescript-eslint/restrict-template-expressions": 0,
+			"@typescript-eslint/strict-boolean-expressions": 0,
+			"@typescript-eslint/no-misused-promises": 0,
 			"prettier/prettier": "error"
 		}
 	},
 	"devDependencies": {
 		"@cloudflare/workers-types": "^3.14.1",
 		"@types/jest": "^28.1.6",
+		"@types/node": "^18.11.0",
 		"@typescript-eslint/eslint-plugin": "^5.40.0",
 		"@typescript-eslint/parser": "^5.32.0",
 		"eslint": "8.22.0",
@@ -52,6 +56,8 @@
 		"wrangler": "^2.0.24"
 	},
 	"dependencies": {
-		"@tsndr/cloudflare-worker-router": "^2.2.0"
+		"@tsndr/cloudflare-worker-router": "^2.2.0",
+		"date-fns": "^2.29.3",
+		"yup": "^0.32.11"
 	}
 }
