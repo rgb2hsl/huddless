@@ -5,7 +5,7 @@ export interface Person {
   title: string;
 }
 
-export const PersonSchema = yup.object().shape({
+export const PersonPartialSchema = yup.object().shape({
   identity: yup.string().required(),
   title: yup.string(),
 });
@@ -22,12 +22,22 @@ export const MessageSchema = yup.object().shape({
   date: yup.date().required(),
 });
 
+export interface SystemMessage {
+  body: string;
+  date: Date;
+}
+
+export const SystemMessageSchema = yup.object().shape({
+  body: yup.string().required(),
+  date: yup.date().required(),
+});
+
 export interface HubState {
   persons: Person[];
   messages: Message[];
 }
 
 export const HubStateSchema = yup.object().shape({
-  persons: yup.array().of(PersonSchema).required(),
+  persons: yup.array().of(PersonPartialSchema).required(),
   messages: yup.array().of(MessageSchema).required(),
 });

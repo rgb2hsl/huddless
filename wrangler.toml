@@ -4,6 +4,14 @@ usage_model = "bundled"
 compatibility_date = "2022-09-16"
 node_compat = true
 
-kv_namespaces = [
-  { binding = "HUDDLESS", id = "10ba233852f14343ac240deeacf6e484", preview_id = "7dc819b8099a405abe2d5720ce71865c" }
+[durable_objects]
+bindings = [
+  { name = "HUDDLESS", class_name = "Huddless" }
 ]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["Huddless"]
+
+[vars]
+HUDDLESS_NAME = "huddless_chat"

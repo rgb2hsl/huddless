@@ -1,7 +1,7 @@
 import * as yup from "yup";
 
 export interface PostBody {
-  type: "HANDSHAKE" | "MESSAGE" | "PERSON";
+  type: "MESSAGE" | "PERSON";
   body: string;
   signature: number[];
   publicKey: JsonWebKey;
@@ -15,7 +15,7 @@ export const PostBodySchema = yup.object().shape({
   type: yup
     .string()
     .required("Payload type not presented")
-    .matches(/(HANDSHAKE|MESSAGE|PERSON)/),
+    .matches(/(MESSAGE|PERSON)/),
   body: yup.string().required("No massage provided"),
   signature: yup.array().of(yup.number()).required("No signature provided"),
   publicKey: yup.object().shape({
@@ -33,3 +33,7 @@ export const PostBodySchema = yup.object().shape({
     y: yup.string().required(crypto).length(43, crypto),
   }),
 });
+
+export interface PersonHandshake {
+  identity: string;
+}

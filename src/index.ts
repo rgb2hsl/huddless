@@ -1,16 +1,23 @@
 import { Router } from "@tsndr/cloudflare-worker-router";
 import { ValidationError } from "yup";
-import { PostBody, PostBodySchema, PostBodyUnsigned } from "./types/PostBody";
+import {
+  PersonHandshake,
+  PostBody,
+  PostBodySchema,
+  PostBodyUnsigned,
+} from "./types/PostBody";
 import { verify } from "./helpers/verify";
-import { Person, PersonSchema } from "./types/HubState";
+import { Person, PersonPartialSchema } from "./types/HubState";
 import identity from "./helpers/identity";
-import { HubService } from "./services/HubService";
-import { add } from "date-fns";
-import config from "./config";
+import {
+  MessagePayload,
+  PersonsPayload,
+  SystemMessagePayload,
+} from "./types/Messages";
 
 export interface Env {
-  SALT: string;
-  HUDDLESS: KVNamespace;
+  HUDDLESS: DurableObjectNamespace;
+  HUDDLESS_NAME: string;
 }
 
 // Initialize router
@@ -65,143 +72,233 @@ router.post("/sigcheck/", async ({ req, res }) => {
   }
 });
 
-/** =====================
- * WEBSOCKET
- * ====================== */
-const handleSession = async (websocket: WebSocket, env: Env): Promise<void> => {
-  const hubService = new HubService(env);
-  const tick = async (postBody?: PostBody): Promise<void> => {
-    try {
-      const state = await hubService.getState();
-      const stateJsonSnapshot = JSON.stringify(state);
-
-      /** Drop Old Messages */
-      state.messages = state.messages.filter(
-        (m) =>
-          add(new Date(m.date), { seconds: config.dissolveTime / 1000 }) >
-          new Date()
-      );
-
-      /** Websocket routing */
-
-      if (postBody && postBody.type === "HANDSHAKE") {
-        console.log("HANDSHAKE", postBody);
-      } else if (postBody && postBody.type === "MESSAGE") {
-        console.log("MESSAGE", postBody);
-        state.messages.push({
-          identity: await identity(postBody.publicKey),
-          body: postBody.body,
-          date: new Date(),
-        });
-      } else if (postBody && postBody.type === "PERSON") {
-        console.log("PERSON", postBody);
-        const personLike = JSON.parse(postBody.body);
-        await PersonSchema.validate(personLike);
-        const person: Person = personLike as Person;
-
-        // check permissions and apply
-        const claimedIdentity = await identity(postBody.publicKey);
-        if (person.identity === claimedIdentity) {
-          console.log("Permission granted, identity:", claimedIdentity);
-
-          // check for name avaible
-          const faker = state.persons.find(
-            (p) => p.identity !== claimedIdentity && p.title === person.title
-          );
-
-          if (faker) person.title = `${person.title}_2`;
-
-          const oldPerson = state.persons.find(
-            (p) => p.identity === claimedIdentity
-          );
-
-          if (oldPerson) {
-            state.persons = state.persons.map((p) =>
-              p.identity === claimedIdentity ? person : p
-            );
-          } else {
-            state.persons.push(person);
-          }
-        }
-      }
-
-      /** Update state */
-      if (JSON.stringify(state) !== stateJsonSnapshot) {
-        await hubService.saveState(state);
-      }
-
-      websocket.send(JSON.stringify(state));
-    } catch (e) {
-      console.log(e);
-    }
-  };
-
-  websocket.accept();
-
-  websocket.addEventListener("message", async ({ data }) => {
-    if (data instanceof ArrayBuffer) return;
-
-    try {
-      const obj = JSON.parse(data);
-      await PostBodySchema.validate(obj);
-      const postBody = obj as PostBody;
-      const postBodyUnsigned: PostBodyUnsigned = {
-        type: postBody.type,
-        body: postBody.body,
-        publicKey: postBody.publicKey,
-      };
-
-      const trusted = await verify(
-        JSON.stringify(postBodyUnsigned),
-        postBody.signature,
-        postBody.publicKey
-      );
-
-      if (trusted) {
-        await tick(postBody);
-      } else {
-        console.error("Untrusted");
-      }
-    } catch (e) {
-      console.error(e);
-    }
-  });
-
-  websocket.addEventListener("close", async () => {
-    clearInterval(interval);
-  });
-
-  const interval = setInterval(async () => await tick(), config.dissolveTime);
-};
-
-const websocketHandler = async (
-  request: Request,
-  env: Env
-): Promise<Response> => {
-  const upgradeHeader = request.headers.get("Upgrade");
-  if (upgradeHeader !== "websocket") {
-    return new Response("Expected websocket", { status: 400 });
-  }
-
-  const [client, server] = Object.values(new WebSocketPair());
-  await handleSession(server, env);
-
-  return new Response(null, {
-    status: 101,
-    webSocket: client,
-  });
-};
-
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+    const huddless = env.HUDDLESS.get(
+      env.HUDDLESS.idFromName(env.HUDDLESS_NAME)
+    );
 
     switch (url.pathname) {
       case "/ws/":
-        console.log("Websocket requested");
-        return await websocketHandler(request, env);
+        return await huddless.fetch(request);
       default:
         return await router.handle(env, request);
     }
   },
 };
+
+interface HuddlessSession {
+  person: Person;
+  ws: WebSocket;
+}
+
+export class Huddless implements DurableObject {
+  state: DurableObjectState;
+  env: Env;
+  sessions: HuddlessSession[];
+
+  constructor(state: DurableObjectState, env: Env) {
+    this.state = state;
+    this.env = env;
+    this.sessions = [];
+  }
+
+  async fetch(req: Request): Promise<Response> {
+    const pair = new WebSocketPair();
+
+    await this.handleSession(pair[1]);
+
+    return new Response(null, { status: 101, webSocket: pair[0] });
+  }
+
+  broadcastPersons(
+    persons: Person[],
+    sessions: HuddlessSession[] = this.sessions
+  ): void {
+    sessions.forEach((session) => {
+      const personPayload: PersonsPayload = {
+        type: "PERSONS",
+        body: persons,
+      };
+
+      session.ws.send(JSON.stringify(personPayload));
+    });
+  }
+
+  broadcastSystemMessage(message: string): void {
+    this.sessions.forEach((session) => {
+      const joinMessagePayload: SystemMessagePayload = {
+        type: "SYSTEM_MESSAGE",
+        body: {
+          date: new Date(),
+          body: message,
+        },
+      };
+
+      session.ws.send(JSON.stringify(joinMessagePayload));
+    });
+  }
+
+  broadcastMessage(identityString: string, message: string): void {
+    this.sessions.forEach((session) => {
+      const messagePayload: MessagePayload = {
+        type: "MESSAGE",
+        body: {
+          identity: identityString,
+          date: new Date(),
+          body: message,
+        },
+      };
+
+      session.ws.send(JSON.stringify(messagePayload));
+    });
+  }
+
+  async handleSession(webSocket: WebSocket): Promise<void> {
+    webSocket.accept();
+
+    // setting up a socket for client
+    webSocket.addEventListener("message", async ({ data }) => {
+      if (data instanceof ArrayBuffer) return;
+
+      /** Signature validation start */
+
+      let obj;
+
+      try {
+        obj = JSON.parse(data);
+        await PostBodySchema.validate(obj);
+      } catch {
+        console.error("[WS message handler] invalid message", obj);
+        return;
+      }
+
+      const postBody = obj as PostBody;
+      const { signature, ...postBodyUnsigned } = postBody;
+
+      const signVerified = await verify(
+        JSON.stringify(postBodyUnsigned),
+        signature,
+        postBody.publicKey
+      );
+
+      if (!signVerified) {
+        console.error("[WS message handler] invalid signature", obj);
+        return;
+      }
+
+      /** Signature validation end */
+
+      /** PostBody switch start */
+
+      if (postBody.type === "MESSAGE") {
+        // broadcast message to all sessions
+        this.broadcastMessage(
+          await identity(postBody.publicKey),
+          postBody.body
+        );
+      } else if (postBody.type === "PERSON") {
+        let personLike;
+
+        try {
+          personLike = JSON.parse(postBody.body);
+          await PersonPartialSchema.validate(personLike);
+        } catch {
+          console.error(
+            "[WS message handler] invalid person partial payload",
+            personLike
+          );
+          return;
+        }
+
+        // here will be our person
+        let person: Person;
+
+        // figuring out with person handshake or not
+        if (personLike.title) {
+          person = personLike as Person;
+          // save person ins storage
+          await this.state.storage.put(person.identity, person);
+
+          console.info("[WS message handler] a Person stored", person);
+        } else {
+          // it's a handshake i.e. it's a first person message
+          console.info(
+            "[WS message handler] a Person handshake requested",
+            personLike
+          );
+          // do we already have this person?
+          const personOrUndefined = await this.state.storage.get<Person>(
+            (personLike as PersonHandshake).identity
+          );
+          if (!personOrUndefined) {
+            person = {
+              identity: (personLike as PersonHandshake).identity,
+              title: (personLike as PersonHandshake).identity.substring(0, 4),
+            };
+
+            console.info(
+              "[WS message handler] no Person stored yet, creating a new one"
+            );
+
+            await this.state.storage.put(person.identity, person);
+
+            console.info("[WS message handler] a Person stored", person);
+          } else {
+            person = personOrUndefined;
+            console.info(
+              "[WS message handler] found a person",
+              personOrUndefined
+            );
+          }
+        }
+
+        // do we already have saved session for this person?
+        let session = this.sessions.find(
+          (session) => session.person.identity === person.identity
+        );
+
+        if (!session) {
+          // join message for all except current session
+          this.broadcastSystemMessage(`${person.title} joined`);
+
+          // add current session
+          session = {
+            ws: webSocket,
+            person,
+          };
+
+          this.sessions.push(session);
+        } else {
+          session.person = person; // update person info
+        }
+
+        // broadcast all online persons (with current) for all sessions
+        this.broadcastPersons(this.sessions.map((session) => session.person));
+      }
+
+      /** PostBody switch end */
+    });
+
+    const closeOrErrorHandler = (): void => {
+      const quitter = this.sessions.find((session) => session.ws === webSocket);
+
+      if (quitter) {
+        this.sessions = this.sessions.filter(
+          (session) => session.ws !== webSocket
+        );
+
+        // quit message
+        this.broadcastSystemMessage(`${quitter.person.title} quit`);
+      } else {
+        console.error(
+          "WebSocket closed, but can't find it's session. Zombie session detected!"
+        );
+      }
+    };
+
+    webSocket.addEventListener("close", closeOrErrorHandler);
+    webSocket.addEventListener("error", closeOrErrorHandler);
+  }
+}
